@@ -1,16 +1,44 @@
-## README for FYP Submission
+# README for FYP Submission
 
-Disclaimer: Most of the source code were written by the original creators of nnU-Net; 
-that includes the comments that contain less than ideal language for academic submission. 
-Nonetheless, I decided to keep the comments as they are to avoid unnecessary work, i.e. 
-only modify parts of the source code that I deemed necessary for the optimizations. That being said, 
-the files that I have modified to make the optimizations are listed below:
+## Project Structure
+notts-fyp
+- nnUNet/ = main codebase
+- model.zip = trained model weights
+- test_set = sample test dataset from FLARE2024, 10 smallest files
+- data/ = placeholder folders, used during setting temp env variables
+- env.ps1 = powershell script to set temporary variables
+- inference_flare_task2.py = baseline optimization by Kirchhoff et. al
 
-1. 
-2. 
+## What is nnU-Net?
 
-Before running the code:
+## Disclaimers
+### Modified Files
+As I only made optimizations that pertain to the inference of the model,
+most of the original codebase of nnU-Net remains untouched. The files listed
+below are those that I have added/modified to make the optimizations are listed below:
 
-1. Enter a virtual environment (Python's built in one)
-2. Install dependencies (torchvision, nnU-Net, OpenVINO, NNCF)
+1. NNCF_inference.py
+
+### Hardware and Software
+These are the hardware and software that I ran this on, and recommend the examiners to run it on for
+better reproducibility.
+OS = Windows
+IDE = PyCharm
+Python version = 3.14
+Terminal used by PyCharm = PowerShell
+
+### Setup
+1. Open your preferred IDE (I used PyCharm for this project)
+2. Click on New Project
+3. Click on the project folder "notts-fyp"
+4. Create a new virtual environment "python -m venv .venv"
+5. Enter the environment ".venv/Scripts/activate"
+6. Install dependencies (openvino, nncf, onnx) + torch first (they specify to always install torch first) 
+"pip install torch torchvision"
+7. Install nnU-Net "cd nnUNet" "pip install -e ."
+8. Run powershell script to set temporary environment variables "./env.ps1"
+4. Install provided `model.zip` by entering "nnUNetv2_install_pretrained_model_from_zip model.zip"
+5. Run inference on baseline by entering python inference_flare_task1.py
+6. Run inference on optimization-1 by entering
+7. Run inference on optimization-2 by entering
 
