@@ -2,14 +2,22 @@
 
 ## Project Structure
 notts-fyp
-- nnUNet/ = main codebase
-- model.zip = trained model weights
-- test_set = sample test dataset from FLARE2024, 10 smallest files
-- data/ = placeholder folders, used during setting temp env variables
-- env.ps1 = powershell script to set temporary variables
-- inference_flare_task2.py = baseline optimization by Kirchhoff et. al
+- `nnUNet/` = main codebase
+- `data/` = folders used by nnU-Net via env. variables; i.e. `data/nnUNet_results` is used when extracting `model.zip`
+- `training_set` = training images used for training `model.zip`, also used for calibration in `NNCF_inference.py`
+- `test_set/` = sample test images from FLARE2024, 10 smallest files
+- `ground_truths/` = ground_truths to evaluate the predictions against
+- `results/` = inference results (model performance, i.e. dice, iou)
+- `model.zip` = trained model weights
+- `env.ps1` = PowerShell script to set temporary environment variables
+- `inference_flare_task2.py` = baseline inference optimization by Kirchhoff et. al using OpenVINO
+- `NNCF_inference.py` = inference optimization using OpenVINO and NNCF quantization
+- 
 
 ## What is nnU-Net?
+
+## What is my contribution?
+
 
 ## Disclaimers
 ### Modified Files
@@ -28,17 +36,15 @@ Python version = 3.14
 Terminal used by PyCharm = PowerShell
 
 ### Setup
-1. Open your preferred IDE (I used PyCharm for this project)
-2. Click on New Project
+1. Open PyCharm
+2. `New Project >`
 3. Click on the project folder "notts-fyp"
-4. Create a new virtual environment "python -m venv .venv"
-5. Enter the environment ".venv/Scripts/activate"
-6. Install dependencies (openvino, nncf, onnx) + torch first (they specify to always install torch first) 
-"pip install torch torchvision"
-7. Install nnU-Net "cd nnUNet" "pip install -e ."
-8. Run powershell script to set temporary environment variables "./env.ps1"
-4. Install provided `model.zip` by entering "nnUNetv2_install_pretrained_model_from_zip model.zip"
-5. Run inference on baseline by entering python inference_flare_task1.py
+4. Create a new virtual environment by running `python -m venv .venv` in the terminal.
+5. Enter the environment by running `.venv/Scripts/activate`.
+6. Install dependencies by running `pip install -r fyp-dependencies.txt`.
+7. Install nnU-Net `cd nnUNet` > `pip install -e .`.
+8. Set temporary environment variables by running `./env.ps1`.
+4. Install provided `model.zip` by running `nnUNetv2_install_pretrained_model_from_zip model.zip`.
+5. Run inference on baseline by entering `python inference_flare_task1.py`.
 6. Run inference on optimization-1 by entering
-7. Run inference on optimization-2 by entering
 
