@@ -5,7 +5,7 @@ import os
 from copy import deepcopy
 from queue import Queue
 from threading import Thread
-from time import sleep
+from time import sleep, time
 from typing import Tuple, Union, List, Optional
 
 import numpy as np
@@ -970,6 +970,8 @@ def predict_entry_point():
     else:
         device = torch.device('mps')
 
+    model_start = time()
+
     predictor = nnUNetPredictor(tile_step_size=args.step_size,
                                 use_gaussian=True,
                                 use_mirroring=not args.disable_tta,
@@ -983,6 +985,8 @@ def predict_entry_point():
         args.f,
         checkpoint_name=args.chk
     )
+
+    print(f"Model initialization time: {time() - model_start:.2f}s")
     
     run_sequential = args.nps == 0 and args.npp == 0
     
