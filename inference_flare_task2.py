@@ -429,12 +429,18 @@ def predict_flare(input_dir, output_dir, model_folder, save_model):
     output_dir.mkdir(exist_ok=True, parents=True)
     input_files = list(input_dir.glob("*.nii.gz"))
     output_files = [str(output_dir / f.name[:-12]) for f in input_files]
+
+    model_start = time()
+
+    predictor = FlarePredictor(tile_step_size=0.5, use_mirroring=False, device=torch.device("cpu"))
+    predictor.initialize_from_trained_model_folder(model_folder, ("0",), save_model=save_model)
+    rw = predictor.plans_manager.image_reader_writer_class()
+
+    print(f"Model initialization time: {time() - model_start:.2f}s")
+
     for input_file, output_file in zip(input_files, output_files):
         print(f"Predicting {input_file.name}")
         start = time()
-        predictor = FlarePredictor(tile_step_size=0.5, use_mirroring=False, device=torch.device("cpu"))
-        predictor.initialize_from_trained_model_folder(model_folder, ("0",), save_model=save_model)
-        rw = predictor.plans_manager.image_reader_writer_class()
         image, props = rw.read_images([input_file,])
         _ = predictor.predict_single_npy_array(image, props, None, output_file, False)
         print(f"Prediction time: {time() - start:.2f}s")
