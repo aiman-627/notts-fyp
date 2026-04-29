@@ -31,17 +31,17 @@ torch.set_num_threads(multiprocessing.cpu_count())
 class NNCFOpenVINOPredictor(nnUNetPredictor):
     """
     Extends nnUNetPredictor with:
-      1. NNCF post-training quantization (PTQ) on the PyTorch model
-      2. Export of the quantized model to OpenVINO IR
+      1. NNCF Post-Training Quantisation (PTQ) on the trained model network
+      2. Export of the quantised model to OpenVINO IR
       3. Inference via OpenVINO compiled model on CPU
-    TTA (mirroring) is disabled by default.
-    Supports both 2D and 3D nnU-Net configurations.
+
+    Also disables Test-Time Augmentation, similar to the reference optimisation by Kirchhoff et al., to reduce latency
     """
 
     def __init__(self,
                  tile_step_size: float = 0.5,
                  use_gaussian: bool = True,
-                 use_mirroring: bool = False,  # TTA disabled
+                 use_mirroring: bool = False,  # use_mirroring is flag to enable/disable Test-Time Augmentation
                  perform_everything_on_device: bool = False,
                  device: torch.device = torch.device('cpu'),
                  verbose: bool = False,
@@ -63,20 +63,13 @@ class NNCFOpenVINOPredictor(nnUNetPredictor):
         self.num_calibration_samples = num_calibration_samples
         self.ov_network = None  # compiled OpenVINO model
 
-    # ------------------------------------------------------------------
-    # Calibration dataset builder (2D and 3D aware)
-    # ------------------------------------------------------------------
+    # Calibration dataset is built from training images; used for Post-Training Quantisation (PTQ)
     def _build_calibration_dataset(self, num_input_channels, patch_size):
-        is_2d = len(patch_size) == 2
 
         if self.calibration_dir is None:
             print("No calibration_dir provided — using random noise for PTQ calibration.")
-            if is_2d:
-                return [torch.randn(1, num_input_channels, patch_size[0], patch_size[1])
-                        for _ in range(self.num_calibration_samples)]
-            else:
-                return [torch.randn(1, num_input_channels, *patch_size)
-                        for _ in range(self.num_calibration_samples)]
+            return [torch.randn(1, num_input_channels, patch_size[0], patch_size[1])
+                    for _ in range(self.num_calibration_samples)]
 
         files = sorted(Path(self.calibration_dir).glob("*.nii.gz"))
         if not files:
@@ -94,32 +87,20 @@ class NNCFOpenVINOPredictor(nnUNetPredictor):
                 self.configuration_manager,
                 self.dataset_json,
             )
-            data = torch.from_numpy(data.astype(np.float32))  # (C, Z, H, W) for 2d; (C, X, Y, Z) for 3d
+            data = torch.from_numpy(data.astype(np.float32))
 
             samples_per_image = max(1, self.num_calibration_samples // len(files))
 
-            if is_2d:
-                ph, pw = patch_size
-                c, z, h, w = data.shape
-                for _ in range(samples_per_image):
-                    zi = random.randint(0, max(0, z - 1))
-                    hi = random.randint(0, max(0, h - ph))
-                    wi = random.randint(0, max(0, w - pw))
-                    patch = data[:, zi, hi:hi + ph, wi:wi + pw]
-                    if patch.shape[1:] != torch.Size([ph, pw]):
-                        patch, _ = pad_nd_image(patch, [ph, pw], 'constant', {'value': 0}, True, None)
-                    patches.append(patch.unsqueeze(0))  # (1, C, H, W)
-            else:
-                px, py, pz = patch_size
-                c, x, y, z = data.shape
-                for _ in range(samples_per_image):
-                    xi = random.randint(0, max(0, x - px))
-                    yi = random.randint(0, max(0, y - py))
-                    zi = random.randint(0, max(0, z - pz))
-                    patch = data[:, xi:xi + px, yi:yi + py, zi:zi + pz]
-                    if patch.shape[1:] != torch.Size(patch_size):
-                        patch, _ = pad_nd_image(patch, patch_size, 'constant', {'value': 0}, True, None)
-                    patches.append(patch.unsqueeze(0))  # (1, C, X, Y, Z)
+            ph, pw = patch_size
+            c, z, h, w = data.shape
+            for _ in range(samples_per_image):
+                zi = random.randint(0, max(0, z - 1))
+                hi = random.randint(0, max(0, h - ph))
+                wi = random.randint(0, max(0, w - pw))
+                patch = data[:, zi, hi:hi + ph, wi:wi + pw]
+                if patch.shape[1:] != torch.Size([ph, pw]):
+                    patch, _ = pad_nd_image(patch, [ph, pw], 'constant', {'value': 0}, True, None)
+                patches.append(patch.unsqueeze(0))
 
             if len(patches) >= self.num_calibration_samples:
                 break
@@ -128,11 +109,8 @@ class NNCFOpenVINOPredictor(nnUNetPredictor):
         print(f"Collected {len(patches)} calibration patches.")
         return patches
 
-    # ------------------------------------------------------------------
-    # Model loading: PTQ → OpenVINO
-    # ------------------------------------------------------------------
-    def initialize_from_trained_model_folder(self,
-                                             model_training_output_dir: str,
+    # Model initialisation; most of this is reused code from the reference optimisation
+    def initialise_from_trained_model_folder(self, model_training_output_dir: str,
                                              use_folds: Union[Tuple[Union[int, str]], None],
                                              checkpoint_name: str = 'checkpoint_final.pth'):
         if use_folds is None:
@@ -157,11 +135,12 @@ class NNCFOpenVINOPredictor(nnUNetPredictor):
                 trainer_name = checkpoint['trainer_name']
                 configuration_name = checkpoint['init_args']['configuration']
                 inference_allowed_mirroring_axes = checkpoint.get('inference_allowed_mirroring_axes', None)
+
             parameters.append(checkpoint['network_weights'])
 
         configuration_manager = plans_manager.get_configuration(configuration_name)
-        num_input_channels = determine_num_input_channels(plans_manager, configuration_manager, dataset_json)
 
+        num_input_channels = determine_num_input_channels(plans_manager, configuration_manager, dataset_json)
         trainer_class = recursive_find_python_class(
             join(nnunetv2.__path__[0], "training", "nnUNetTrainer"),
             trainer_name,
@@ -178,37 +157,36 @@ class NNCFOpenVINOPredictor(nnUNetPredictor):
             plans_manager.get_label_manager(dataset_json).num_segmentation_heads,
             enable_deep_supervision=False,
         )
-        network.load_state_dict(parameters[0])
-        network.eval()
-
-        # Store metadata before calibration dataset needs it
+        self.network = network
+        self.allowed_mirroring_axes = inference_allowed_mirroring_axes
         self.plans_manager = plans_manager
         self.configuration_manager = configuration_manager
         self.dataset_json = dataset_json
-        self.list_of_parameters = parameters
-        self.trainer_name = trainer_name
-        self.allowed_mirroring_axes = inference_allowed_mirroring_axes
         self.label_manager = plans_manager.get_label_manager(dataset_json)
 
+        network.load_state_dict(parameters[0])
+
+        # patch size is the same patch size determined during dataset extraction (before training)
         patch_size = configuration_manager.patch_size
 
-        # --- Step 1: NNCF PTQ ---
         calibration_data = self._build_calibration_dataset(num_input_channels, patch_size)
         calibration_dataset = nncf.Dataset(calibration_data, lambda x: x)
 
-        print("Applying NNCF post-training quantization...")
+        # PTQ is applied onto the model
+        print("Applying NNCF Post-Training Quantisation...")
         quantized_network = nncf.quantize(network, calibration_dataset)
         quantized_network.eval()
         print("NNCF quantization complete.")
 
-        # --- Step 2: Export to OpenVINO IR ---
+        # Convert to OpenVINO intermediate representation, to compile the model using OpenVINO backend
         example_input = torch.randn(1, num_input_channels, *patch_size)
         print("Converting quantized model to OpenVINO IR...")
         ov_model = ov.convert_model(quantized_network, example_input=example_input)
 
-        # --- Step 3: Compile with OpenVINO for CPU ---
         core = ov.Core()
-        core.set_property("CPU", {hints.execution_mode: hints.ExecutionMode.PERFORMANCE})
+        core.set_property(
+            "CPU", {hints.execution_mode: hints.ExecutionMode.PERFORMANCE}
+        )
         config = {
             hints.performance_mode: hints.PerformanceMode.LATENCY,
             hints.enable_cpu_pinning(): True,
@@ -217,23 +195,22 @@ class NNCFOpenVINOPredictor(nnUNetPredictor):
         self.network = None  # PyTorch model no longer needed
         print("OpenVINO model compiled and ready.")
 
-    # ------------------------------------------------------------------
-    # Override: run the OpenVINO model instead of the PyTorch network
-    # ------------------------------------------------------------------
+    # Function to return the result of a forward pass of the model, i.e. make a prediction on a patch of an image
+    # Overridden to not include test-time augmentation, to reduce inference latency at the cost of reduced
+    # segmentation accuracy
     def _internal_maybe_mirror_and_predict(self, x: torch.Tensor) -> torch.Tensor:
-        # TTA is disabled (use_mirroring=False), so this just runs a forward pass
         result = self.ov_network(x.numpy())[0]  # numpy in, numpy out
         return torch.from_numpy(result)
 
-    # ------------------------------------------------------------------
-    # Override: simple slice loop — no threading queue (OV isn't nn.Module)
-    # ------------------------------------------------------------------
+    # Function to iterate on patches of an image and make predictions
+    # Overridden to not use original thread logic to feed image patches, due to it not being runnable on
+    # OpenVINO backend
     def _internal_predict_sliding_window_return_logits(self,
                                                        data: torch.Tensor,
                                                        slicers,
                                                        do_on_device: bool = True):
         predicted_logits = n_predictions = prediction = gaussian = workon = None
-        results_device = torch.device('cpu')  # always CPU for OpenVINO
+        results_device = torch.device('cpu')
 
         try:
             data = data.to(results_device)
@@ -272,18 +249,9 @@ class NNCFOpenVINOPredictor(nnUNetPredictor):
 
         return predicted_logits
 
-    # ------------------------------------------------------------------
-    # Override: skip PyTorch state-dict reload loop
-    # ------------------------------------------------------------------
-    def predict_logits_from_preprocessed_data(self, data: torch.Tensor) -> torch.Tensor:
-        prediction = self.predict_sliding_window_return_logits(data)
-        if self.verbose:
-            print('Prediction done')
-        return prediction
-
-    # ------------------------------------------------------------------
-    # Override: skip .to(device) / .eval() calls on the (None) network
-    # ------------------------------------------------------------------
+    # Function to get "window" positions on patches of the image
+    # Overridden to not use "self.network", since model is run on OpenVINO backend now instead of PyTorch
+    # Also does not use CUDA autocast (improves performance of network operations on GPUs) anymore, which is only on GPUs
     @torch.inference_mode()
     def predict_sliding_window_return_logits(self, input_image: torch.Tensor) -> torch.Tensor:
         assert isinstance(input_image, torch.Tensor)
@@ -300,10 +268,16 @@ class NNCFOpenVINOPredictor(nnUNetPredictor):
             predicted_logits = predicted_logits[(slice(None), *slicer_revert_padding[1:])]
         return predicted_logits
 
+    # Original function was to reload PyTorch model weights and average predictions across folds
+    # Overridden to only use one fold, since I only trained one fold. Function effectively just calls
+    # predict_sliding_window_return_logits() with no additional logic
+    def predict_logits_from_preprocessed_data(self, data: torch.Tensor) -> torch.Tensor:
+        prediction = self.predict_sliding_window_return_logits(data)
+        if self.verbose:
+            print('Prediction done')
+        return prediction
 
-# ----------------------------------------------------------------------
-# Entry point
-# ----------------------------------------------------------------------
+# Program entry point, mostly just reused code
 def predict_nncf_openvino(input_dir, output_dir, model_folder,
                           calibration_dir, num_calibration_samples):
     input_dir = Path(input_dir)
@@ -314,7 +288,7 @@ def predict_nncf_openvino(input_dir, output_dir, model_folder,
     output_files = [str(output_dir / f.name[:-12]) for f in input_files]
 
     model_start = time()
-    # Initialise predictor once — PTQ + OV compilation happens here
+    # Initialise the predictor object
     predictor = NNCFOpenVINOPredictor(
         tile_step_size=0.5,
         use_mirroring=False,
@@ -322,7 +296,7 @@ def predict_nncf_openvino(input_dir, output_dir, model_folder,
         calibration_dir=calibration_dir,
         num_calibration_samples=num_calibration_samples,
     )
-    predictor.initialize_from_trained_model_folder(model_folder, ("0",))
+    predictor.initialise_from_trained_model_folder(model_folder, ("0",)) # I hardcoded this, since it's the only fold I trained
     rw = predictor.plans_manager.image_reader_writer_class()
 
     print(f"Model initialization time: {time() - model_start:.2f}s")
@@ -334,11 +308,11 @@ def predict_nncf_openvino(input_dir, output_dir, model_folder,
         predictor.predict_single_npy_array(image, props, None, output_file, False)
         print(f"Prediction time: {time() - start:.2f}s")
 
-
+# Used argparser so running the program is more straight-forward in the CLI
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", default="test_set")
-    parser.add_argument("-o", "--output", default="output_nncf_ov")
+    parser.add_argument("-o", "--output", default="NNCFopt_inference_results")
     parser.add_argument("-m", "--model", required=True)
     parser.add_argument("--calibration_dir", default=None,
                         help="Folder of .nii.gz images for PTQ calibration. "
